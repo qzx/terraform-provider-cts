@@ -1,4 +1,4 @@
-module github.com/qzx/terraform-provider-cts
+module terraform-provider-cts
 
 go 1.18
 

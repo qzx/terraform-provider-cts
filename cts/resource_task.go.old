@@ -1,0 +1,228 @@
+package cts
+
+import (
+	"context"
+	"log"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	client "github.com/qzx/cts-client-go"
+)
+
+func resourceTask() *schema.Resource {
+	return &schema.Resource{
+		CreateContext: resourceTaskCreate,
+		ReadContext:   resourceTaskRead,
+		UpdateContext: resourceTaskUpdate,
+		DeleteContext: resourceTaskDelete,
+		Schema: map[string]*schema.Schema{
+			"last_updated": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
+			"name": &schema.Schema{
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"description": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"enabled": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Computed: true,
+			},
+			"module": &schema.Schema{
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"condition_kv_datacenter": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
+			"condition_kv_path": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"condition_kv_recurse": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+			},
+			"condition_kv_use_as_module_input": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+			},
+			"condition_service_datacenter": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"condition_service_filter": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"condition_service_names": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"condition_service_use_as_module_input": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+			},
+			"providers": {
+				Type:     schema.TypeSet,
+				Required: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+		},
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
+	}
+}
+
+func resourceTaskCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
+	c := m.(*client.Client)
+
+	data, err := taskResourceData(d, m)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	log.Printf("[DEBUG] DATA CONTAINS: %v\n", data)
+
+	// Warning or errors can be collected in a slice type
+	var diags diag.Diagnostics
+	task := client.Task{
+		Task: data,
+	}
+	log.Printf("[DEBUG] TASK CONTAINS: %v\n", task)
+	o, err := c.CreateTask(task)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	d.SetId(buildChecksumID([]string{o.Task.Name}))
+
+	resourceTaskRead(ctx, d, m)
+
+	return diags
+}
+
+func resourceTaskRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
+	c := m.(*client.Client)
+
+	// Warning or errors can be collected in a slice type
+	var diags diag.Diagnostics
+
+	taskName := d.Get("name").(string)
+
+	_, err := c.GetTask(taskName)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	return diags
+}
+
+func resourceTaskUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
+	c := m.(*client.Client)
+
+	if d.HasChange("") {
+		// Warning or errors can be collected in a slice type
+		task := client.Task{
+			Task: client.TaskItem{
+				Name:        d.Get("name").(string),
+				Description: d.Get("description").(string),
+				Module:      d.Get("module").(string),
+				Enabled:     d.Get("enabled").(bool),
+				Providers:   d.Get("providers").([]string),
+				Condition: client.Condition{
+					ConsulKv: &client.ConsulKv{
+						Path:             d.Get("condition_kv_path").(string),
+						Recurse:          d.Get("condition_kv_recurse").(bool),
+						UseAsModuleInput: d.Get("condition_kv_use_module_as_input").(bool),
+					},
+				},
+			},
+		}
+		o, err := c.CreateTask(task)
+		if err != nil {
+			return diag.FromErr(err)
+		}
+
+		d.SetId(o.RequestID)
+	}
+
+	return resourceTaskRead(ctx, d, m)
+}
+
+func resourceTaskDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
+	c := m.(*client.Client)
+
+	// Warning or errors can be collected in a slice type
+	var diags diag.Diagnostics
+
+	taskName := d.Get("name").(string)
+
+	err := c.DeleteTask(taskName)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	// d.SetId("") is automatically called assuming delete returns no errors, but
+	// it is added here for explicitness.
+	d.SetId("")
+
+	return diags
+}
+
+func taskResourceData(d *schema.ResourceData, meta interface{}) (client.TaskItem, error) {
+	data := client.TaskItem{}
+	kv := client.ConsulKv{}
+
+	if v, ok := d.GetOk("name"); ok {
+		data.Name = v.(string)
+	}
+	if v, ok := d.GetOk("description"); ok {
+		data.Description = v.(string)
+	}
+	if v, ok := d.GetOk("module"); ok {
+		data.Module = v.(string)
+	}
+	if v, ok := d.GetOk("enabled"); ok {
+		data.Enabled = v.(bool)
+	}
+	if v, ok := d.GetOk("providers"); ok {
+		vL := v.(*schema.Set).List()
+		providers := make([]string, 0, len(vL))
+		for _, v := range vL {
+			providers = append(providers, v.(string))
+		}
+		data.Providers = providers
+	}
+	if v, ok := d.GetOk("condition_kv_path"); ok {
+		log.Printf("[DEBUG] PATH IS: %v\n", v.(string))
+
+		kv.Path = v.(string)
+	}
+	if v, ok := d.GetOk("condition_kv_recurse"); ok {
+		log.Printf("[DEBUG] RECURSE IS: %v\n", v.(bool))
+		kv.Recurse = v.(bool)
+	}
+	if v, ok := d.GetOk("condition_kv_use_module_as_input"); ok {
+		log.Printf("[DEBUG] USE_MODULE_AS_INPUT IS: %v\n", v.(bool))
+		kv.UseAsModuleInput = v.(bool)
+	}
+	log.Printf("[DEBUG] KV CONTAINS: %v\n", kv)
+
+	data.Condition = client.Condition{
+		ConsulKv: &kv,
+	}
+
+	log.Printf("[DEBUG] KV CONTAINS: %v\n", data.Condition.ConsulKv)
+
+	return data, nil
+}
